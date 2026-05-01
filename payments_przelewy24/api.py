@@ -1,7 +1,8 @@
-import hashlib
-import json
+from __future__ import annotations
+
 import logging
 from dataclasses import asdict, dataclass
+from typing import Any
 
 import requests
 
@@ -45,7 +46,7 @@ class TransactionDTO:
         sign: str,
         success_url: str,
         status_url: str,
-    ):
+    ) -> TransactionDTO:
         return cls(
             merchantId=config.merchant_id,
             posId=config.merchant_id,
@@ -80,7 +81,7 @@ class VerifyDTO:
         transaction: Transaction,
         config: Przelewy24Config,
         sign: str,
-    ):
+    ) -> VerifyDTO:
         return cls(
             merchantId=config.merchant_id,
             posId=config.merchant_id,
@@ -93,12 +94,19 @@ class VerifyDTO:
 
 
 class Przelewy24API:
-    def __init__(self, config: Przelewy24Config, session=None):
+    _config: Przelewy24Config
+    _http: requests.Session
+
+    def __init__(
+        self, config: Przelewy24Config, session: requests.Session | None = None
+    ) -> None:
         self._http = session or requests.session()
         self._config = config
         super().__init__()
 
-    def _do(self, method: str, endpoint: str, data=None):
+    def _do(
+        self, method: str, endpoint: str, data: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         response = self._http.request(
             method=method,
             url=endpoint,
@@ -117,11 +125,6 @@ class Przelewy24API:
                 f"Przelewy24 returns {response.status_code} instead of 200: {response.content}"
             )
         return response.json()
-
-    def _create_sha386_sign(self, **kwargs) -> str:
-        return hashlib.sha384(
-            json.dumps(kwargs).replace(" ", "").encode("utf-8")
-        ).hexdigest()
 
     def testConnection(self) -> bool:
         response = self._do("GET", self._config.endpoints.testConnection)
@@ -160,4 +163,6 @@ class Przelewy24API:
         return response["data"]["status"] == "success"
 
     def get_by_session_id(self, *, session_id: str) -> dict:
-        return self._do("GET", self._config.endpoints.transactionGetBySessionId + session_id)
+        return self._do(
+            "GET", self._config.endpoints.transactionGetBySessionId + session_id
+        )

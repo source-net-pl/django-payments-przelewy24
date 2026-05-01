@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from typing import Any
 
 PRODUCTION_URL: str = "https://secure.przelewy24.pl/"
 SANDBOX_URL: str = "https://sandbox.przelewy24.pl/"
@@ -28,7 +29,6 @@ class Endpoints:
 
 @dataclass(init=False)
 class Przelewy24Config:
-
     pos_id: int
     merchant_id: int
     crc: str
@@ -45,7 +45,10 @@ class Przelewy24Config:
         base_url = SANDBOX_URL if sandbox else PRODUCTION_URL
 
         logger.info(
-            f"Przelewy24 provider configured: base_url={base_url} pos_id={pos_id} merchant_id={merchant_id} crc={crc} api_key={api_key}"
+            "Przelewy24 provider configured: base_url=%s pos_id=%s merchant_id=%s",
+            base_url,
+            pos_id,
+            merchant_id,
         )
 
         self.endpoints = Endpoints(
@@ -56,7 +59,7 @@ class Przelewy24Config:
             transactionGetBySessionId=f"{base_url}{P24_TRANSACTION_GET_BY_SESSION_ID}",
         )
 
-    def generate_sign(self, **kwargs) -> str:
+    def generate_sign(self, **kwargs: dict[str, Any]) -> str:
         return hashlib.sha384(
             json.dumps({**kwargs, **{"crc": self.crc}}).replace(" ", "").encode("utf-8")
         ).hexdigest()

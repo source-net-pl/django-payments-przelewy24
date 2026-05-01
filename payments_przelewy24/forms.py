@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from decimal import Decimal
+from typing import Any
 
 from django import forms
 from payments.models import BasePayment
@@ -18,12 +21,14 @@ class ProcessForm(forms.Form):
     statement = forms.CharField()
     sign = forms.CharField()
 
-    def __init__(self, payment: BasePayment, config: Przelewy24Config, **kwargs):
+    def __init__(
+        self, payment: BasePayment, config: Przelewy24Config, **kwargs: Any
+    ) -> None:
         super().__init__(**kwargs)
         self.config = config
         self.payment = payment
 
-    def clean(self):
+    def clean(self) -> dict[str, Any]:
         cleaned_data = super().clean()
         sign = cleaned_data.get("sign", "-1")
         sessionId = cleaned_data.get("sessionId", "-1")
@@ -51,7 +56,7 @@ class ProcessForm(forms.Form):
 
         return cleaned_data
 
-    def save(self, *args, **kwargs):
+    def save(self, *args: Any, **kwargs: Any) -> None:
         self.payment.transaction_id = self.cleaned_data["statement"]
         self.payment.captured_amount = (
             self.payment.captured_amount + Decimal(self.cleaned_data["amount"]) / 100

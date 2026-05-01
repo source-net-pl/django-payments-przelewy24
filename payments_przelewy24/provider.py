@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import json
 import logging
 from decimal import Decimal
+from typing import Any
 
-import requests
 from django.core.exceptions import ImproperlyConfigured
-from django.http import HttpResponse, HttpResponseForbidden
+from django.http import HttpRequest, HttpResponse
 from django.http.response import HttpResponseBadRequest
 from payments import PaymentStatus
 from payments.core import BasicProvider
@@ -21,7 +23,7 @@ CENTS = Decimal("0.01")
 logger = logging.getLogger(__name__)
 
 
-def _create_transaction_from_payment(payment: BasePayment):
+def _create_transaction_from_payment(payment: BasePayment) -> Transaction:
     return Transaction(
         sessionId=str(payment.pk),
         amount=int(payment.total / CENTS),
@@ -41,14 +43,14 @@ class Przelewy24Provider(BasicProvider):
 
     _method = "post"
 
-    def __init__(self, config: Przelewy24Config, **kwargs):
+    def __init__(self, config: Przelewy24Config, **kwargs: Any) -> None:
         self._api = Przelewy24API(config)
         self._config = config
         super().__init__(**kwargs)
         if not self._capture:
             raise ImproperlyConfigured("Przelewy24 does not support pre-authorization.")
 
-    def get_action(self, payment):
+    def get_action(self, payment: BasePayment) -> str:
         url = self._api.register(
             transaction=_create_transaction_from_payment(payment),
             success_url=payment.get_success_url(),
@@ -57,19 +59,15 @@ class Przelewy24Provider(BasicProvider):
         logger.debug(f"Transaction registered: url={url}")
         return url
 
-    def get_form(self, payment, data=None):
+    def get_form(self, payment: BasePayment, data: Any = None) -> PaymentForm:
         form = super().get_form(payment, data)
         return form
 
-    def get_hidden_fields(self, payment):
+    def get_hidden_fields(self, payment: BasePayment) -> dict[str, Any]:
         return {}
 
-    def get_payment_response(self, payment, extra_data=None):
-        post = self.get_product_data(payment, extra_data)
-        return requests.post(self.endpoint, data=post)
-
-    def process_data(self, payment, request):
-        logging.info("Process Przelewy24's notification: body={request.body}")
+    def process_data(self, payment: BasePayment, request: HttpRequest) -> HttpResponse:
+        logging.info("Process Przelewy24's notification: body=%s", request.body)
         try:
             data = json.loads(request.body.decode("utf-8"))
             form = ProcessForm(payment=payment, config=self._config, data=data)

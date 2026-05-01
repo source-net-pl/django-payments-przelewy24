@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8"]
+        django-version: ["django-21", "django-31"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+
+      - name: Install dependencies
+        run: pip install tox
+
+      - name: Run tests
+        run: tox -e py38-${{ matrix.django-version }}
+        env:
+          PAYMENTS_P24_POS_ID: ${{ secrets.PAYMENTS_P24_POS_ID }}
+          PAYMENTS_P24_MERCHANT_ID: ${{ secrets.PAYMENTS_P24_MERCHANT_ID }}
+          PAYMENTS_P24_CRC: ${{ secrets.PAYMENTS_P24_CRC }}
+          PAYMENTS_P24_API_KEY: ${{ secrets.PAYMENTS_P24_API_KEY }}
+          PAYMENTS_P24_SANDBOX: ${{ secrets.PAYMENTS_P24_SANDBOX }}
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+
+      - name: Install tox
+        run: pip install tox
+
+      - name: Run ruff
+        run: tox -e lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+
+      - name: Install tox
+        run: pip install tox
+
+      - name: Run mypy
+        run: tox -e typecheck

@@ -1,91 +1,110 @@
+from __future__ import annotations
+
 import json
 import logging
 from decimal import Decimal
+from typing import Any
 
-import requests
 from django.core.exceptions import ImproperlyConfigured
-from django.http import HttpResponse, HttpResponseForbidden
-from django.http.response import HttpResponseBadRequest
+from django.db import router, transaction
+from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest, HttpResponseNotAllowed
 from payments import PaymentStatus
 from payments.core import BasicProvider
-from payments.forms import PaymentForm
 from payments.models import BasePayment
 
-from payments_przelewy24.api import Transaction
-from payments_przelewy24.forms import ProcessForm
-
-from .api import Przelewy24API, Przelewy24Config
-
-CENTS = Decimal("0.01")
+from .api import Przelewy24API
+from .config import Przelewy24Config
+from .exceptions import Przelewy24Error
+from .forms import ProcessForm
+from .schemas import Transaction, TransactionReference
 
 logger = logging.getLogger(__name__)
 
 
-def _create_transaction_from_payment(payment: BasePayment):
-    return Transaction(
+def _create_reference_from_payment(payment: BasePayment) -> TransactionReference:
+    amount = Decimal(payment.total) * 100
+    if not amount.is_finite() or amount != amount.to_integral_value():
+        raise ValueError("Payment total must contain an exact number of minor units")
+    return TransactionReference(
         sessionId=str(payment.pk),
-        amount=int(payment.total / CENTS),
+        amount=int(amount),
         currency=payment.currency,
+    )
+
+
+def _create_transaction_from_payment(payment: BasePayment) -> Transaction:
+    return Transaction(
+        **_create_reference_from_payment(payment).model_dump(),
         description=payment.description,
         email=payment.billing_email,
         country=payment.billing_country_code,
-        language="pl",  # TODO,
+        language="pl",
     )
 
 
 class Przelewy24Provider(BasicProvider):
-    """Payment provider for Przelewy24.pl
-    This backend implements payments using a popular Polish gateway, `Przelewy24.pl
-    <http://www.Przelewy24.pl>`_.
-    """
+    """Redirect payments with authenticated, idempotent notifications."""
 
-    _method = "post"
+    _method = "get"
 
-    def __init__(self, config: Przelewy24Config, **kwargs):
-        self._api = Przelewy24API(config)
-        self._config = config
+    def __init__(self, config: Przelewy24Config, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         if not self._capture:
             raise ImproperlyConfigured("Przelewy24 does not support pre-authorization.")
+        self._api = Przelewy24API(config)
+        self._config = config
 
-    def get_action(self, payment):
-        url = self._api.register(
+    def get_action(self, payment: BasePayment) -> str:
+        return self._api.register(
             transaction=_create_transaction_from_payment(payment),
             success_url=payment.get_success_url(),
             status_url=self.get_return_url(payment),
         )
-        logger.debug(f"Transaction registered: url={url}")
-        return url
 
-    def get_form(self, payment, data=None):
-        form = super().get_form(payment, data)
-        return form
-
-    def get_hidden_fields(self, payment):
+    def get_hidden_fields(self, payment: BasePayment) -> dict[str, str]:
         return {}
 
-    def get_payment_response(self, payment, extra_data=None):
-        post = self.get_product_data(payment, extra_data)
-        return requests.post(self.endpoint, data=post)
-
-    def process_data(self, payment, request):
-        logging.info("Process Przelewy24's notification: body={request.body}")
+    def process_data(self, payment: BasePayment, request: HttpRequest) -> HttpResponse:
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
         try:
-            data = json.loads(request.body.decode("utf-8"))
-            form = ProcessForm(payment=payment, config=self._config, data=data)
-            if form.is_valid():
-                orderId = data["orderId"]
-                self._api.verify(
-                    transaction=_create_transaction_from_payment(payment),
-                    orderId=orderId,
+            data = json.loads(request.body)
+        except (ValueError, UnicodeDecodeError):
+            return HttpResponseBadRequest("Invalid JSON")
+        if not isinstance(data, dict):
+            return HttpResponseBadRequest("Expected a JSON object")
+
+        database = router.db_for_write(type(payment), instance=payment)
+        # Serialize callbacks for the same payment, including verification and signals.
+        # PostgreSQL is recommended when notifications can arrive concurrently.
+        with transaction.atomic(using=database):
+            locked = (
+                type(payment)
+                ._default_manager.using(database)
+                .select_for_update()
+                .get(pk=payment.pk)
+            )
+            form = ProcessForm(payment=locked, config=self._config, data=data)
+            if not form.is_valid():
+                return HttpResponseBadRequest("Invalid notification")
+            order_id = form.cleaned_data["orderId"]
+            if locked.status in (PaymentStatus.CONFIRMED, PaymentStatus.REFUNDED):
+                # Version 0.x stored the statement instead of the numeric order ID.
+                if locked.transaction_id in (str(order_id), form.cleaned_data["statement"]):
+                    return HttpResponse("OK")
+                return HttpResponse("Conflicting transaction", status=409)
+            if locked.status not in (PaymentStatus.WAITING, PaymentStatus.INPUT):
+                return HttpResponse("Payment cannot be confirmed in its current state", status=409)
+            try:
+                verified = self._api.verify(
+                    transaction=_create_reference_from_payment(locked), orderId=order_id
                 )
-                form.save()
-                payment.change_status(PaymentStatus.CONFIRMED)
-            else:
-                error_str = ", ".join([f"{k}: {v}" for k, v in form.errors.items()])
-                logger.error(error_str)
-                return HttpResponseBadRequest("Failed - incorrect data")
-        except Exception as e:
-            logger.error(f"{str(e)}, {request.body.decode('utf-8')}")
-            return HttpResponseBadRequest("Failed")
+            except Przelewy24Error:
+                logger.warning("Przelewy24 verification unavailable")
+                return HttpResponse("Verification unavailable; retry later", status=503)
+            if not verified:
+                return HttpResponseBadRequest("Verification failed")
+            form.save()
+            locked.change_status(PaymentStatus.CONFIRMED)
+        payment.refresh_from_db(using=database)
         return HttpResponse("OK")

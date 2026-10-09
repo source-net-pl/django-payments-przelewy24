@@ -1,8 +1,2 @@
-coverage>=5.2.1
-mock>=1.0.1
-flake8>=2.1.0
-tox>=1.7.0
-mypy>=0.800
-pytest-django>=0.10.2
-responses>=0.12.1
-pytest-cov>=2.11.1
+# Compatibility entry point; dependency declarations live in pyproject.toml.
+-e .[test]

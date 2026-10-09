@@ -1,24 +1,16 @@
-## Example Project for payments_przelewy24
+# Test application
 
-This example is provided as a convenience feature to allow potential users to try the app straight from the app repo without having to create a django project.
+This Django project exercises the provider and its per-payment callback URL.
+Run tests from the repository root:
 
-It can also be used to develop the app in place.
+~~~sh
+python -m pip install -e '.[test]'
+python -m pytest --cov=payments_przelewy24
+~~~
 
-To run this example, follow these instructions:
+Settings use dummy Przelewy24 credentials and an in-memory SQLite database.
+HTTP is mocked by the suite. No external credentials are required.
+Example model migrations track current django-payments inherited fields.
 
-1.  Navigate to the root directory of your application (same as `manage.py`)
-2.  Install the requirements for the package:
-
-        pip install -r requirements.txt
-
-3.  Make and apply migrations
-
-        python manage.py makemigrations
-
-        python manage.py migrate
-
-4.  Run the server
-
-        python manage.py runserver
-
-5.  Access from the browser at `http://127.0.0.1:8000`
+For PostgreSQL concurrency tests, follow CONTRIBUTING.rst and set
+P24_TEST_POSTGRES=1. This test app is not a deployable shop or a live payment demo.

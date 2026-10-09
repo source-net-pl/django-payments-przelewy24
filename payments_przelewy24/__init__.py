@@ -1,1 +1,3 @@
-__version__ = "0.1.6"
+"""Przelewy24 provider for django-payments."""
+
+__version__ = "2.0.0"

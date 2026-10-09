@@ -1,9 +1,5 @@
-# -*- coding: utf-8 -*-
-from __future__ import absolute_import, unicode_literals
-
-from django.conf.urls import include
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
 
 from .apps.example.views import index, payment_create, payment_details
 

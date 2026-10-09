@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "django-payments-przelewy24"
+version = "2.0.0"
+description = "Typed Przelewy24 REST API provider for django-payments"
+readme = "README.rst"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "django-payments-przelewy24 contributors"}]
+dependencies = [
+    "Django>=5.2,<6.2",
+    "django-payments>=4.1,<5",
+    "pydantic>=2.12,<3",
+    "requests>=2.32,<3",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Django",
+    "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0",
+    "Framework :: Django :: 6.1",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/source-net-pl/django-payments-przelewy24"
+Issues = "https://github.com/source-net-pl/django-payments-przelewy24/issues"
+Changelog = "https://github.com/source-net-pl/django-payments-przelewy24/blob/main/HISTORY.rst"
+
+[project.optional-dependencies]
+test = ["pytest>=8.3,<10", "pytest-django>=4.11,<5", "pytest-cov>=6,<8", "responses>=0.25,<1"]
+dev = [
+    "django-payments-przelewy24[test]",
+    "ruff>=0.14,<1",
+    "mypy>=1.18,<3",
+    "django-stubs>=5.2,<7",
+    "types-requests>=2.32",
+    "tox>=4.23,<5",
+    "build>=1.2,<2",
+    "twine>=6,<8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["payments_przelewy24"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers -ra"
+markers = ["postgresql: requires PostgreSQL row locking"]
+
+[tool.coverage.run]
+branch = true
+source = ["payments_przelewy24"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 90
+exclude_also = ["if TYPE_CHECKING:"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["tests/apps/example/migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["payments_przelewy24"]
+strict = true
+plugins = ["mypy_django_plugin.main", "pydantic.mypy"]
+
+[tool.django-stubs]
+django_settings_module = "tests.settings"
+
+[[tool.mypy.overrides]]
+module = ["payments.*"]
+follow_untyped_imports = true
+follow_imports = "silent"

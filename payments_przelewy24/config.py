@@ -2,22 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 from dataclasses import dataclass
+from typing import Annotated
 
-PRODUCTION_URL: str = "https://secure.przelewy24.pl/"
-SANDBOX_URL: str = "https://sandbox.przelewy24.pl/"
-P24_TEST_CONNECTION: str = "api/v1/testAccess"
-P24_TRANSACTION_REQUEST: str = "trnRequest"
-P24_TRANSACTION_REGISTER: str = "api/v1/transaction/register"
-P24_TRANSACTION_VERIFY: str = "api/v1/transaction/verify"
-P24_TRANSACTION_GET_BY_SESSION_ID: str = "/api/v1/transaction/by/sessionId/"
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-logger = logging.getLogger(__name__)
+PRODUCTION_URL = "https://secure.przelewy24.pl/"
+SANDBOX_URL = "https://sandbox.przelewy24.pl/"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Endpoints:
     testConnection: str
     transactionRequest: str
@@ -26,47 +21,50 @@ class Endpoints:
     transactionGetBySessionId: str
 
 
-@dataclass(init=False)
-class Przelewy24Config:
+class Przelewy24Config(BaseModel):
+    """Validated, immutable settings; secrets are masked in representations."""
 
-    pos_id: int
-    merchant_id: int
-    crc: str
-    api_key: str
-    endpoints: Endpoints
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
-    def __init__(
-        self, pos_id: int, merchant_id: int, crc: str, api_key: str, sandbox: bool
-    ):
-        self.pos_id = pos_id
-        self.merchant_id = merchant_id
-        self.crc = crc
-        self.api_key = api_key
-        base_url = SANDBOX_URL if sandbox else PRODUCTION_URL
+    pos_id: Annotated[int, Field(gt=0)]
+    merchant_id: Annotated[int, Field(gt=0)]
+    crc: Annotated[SecretStr, Field(min_length=1)]
+    api_key: Annotated[SecretStr, Field(min_length=1)]
+    sandbox: bool = True
+    timeout: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 10.0
 
-        logger.info(
-            f"Przelewy24 provider configured: base_url={base_url} pos_id={pos_id} merchant_id={merchant_id} crc={crc} api_key={api_key}"
+    @property
+    def endpoints(self) -> Endpoints:
+        base = SANDBOX_URL if self.sandbox else PRODUCTION_URL
+        return Endpoints(
+            testConnection=f"{base}api/v1/testAccess",
+            transactionRequest=f"{base}trnRequest",
+            transactionRegister=f"{base}api/v1/transaction/register",
+            transactionVerify=f"{base}api/v1/transaction/verify",
+            transactionGetBySessionId=f"{base}api/v1/transaction/by/sessionId/",
         )
 
-        self.endpoints = Endpoints(
-            testConnection=f"{base_url}{P24_TEST_CONNECTION}",
-            transactionRequest=f"{base_url}{P24_TRANSACTION_REQUEST}",
-            transactionRegister=f"{base_url}{P24_TRANSACTION_REGISTER}",
-            transactionVerify=f"{base_url}{P24_TRANSACTION_VERIFY}",
-            transactionGetBySessionId=f"{base_url}{P24_TRANSACTION_GET_BY_SESSION_ID}",
-        )
-
-    def generate_sign(self, **kwargs) -> str:
-        return hashlib.sha384(
-            json.dumps({**kwargs, **{"crc": self.crc}}).replace(" ", "").encode("utf-8")
-        ).hexdigest()
+    def generate_sign(self, **kwargs: object) -> str:
+        """Hash ordered JSON without changing spaces within field values."""
+        payload = {**kwargs, "crc": self.crc.get_secret_value()}
+        encoded = json.dumps(
+            payload, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+        return hashlib.sha384(encoded).hexdigest()
 
     @classmethod
     def from_env(cls, prefix: str = "PAYMENTS_") -> Przelewy24Config:
-        return cls(
-            pos_id=int(os.getenv(f"{prefix}P24_POS_ID", 0)),
-            merchant_id=int(os.getenv(f"{prefix}P24_MERCHANT_ID", 0)),
-            crc=os.getenv(f"{prefix}P24_CRC", "provide P24 CRC"),
-            api_key=os.getenv(f"{prefix}P24_API_KEY", "provide P24 API KEY"),
-            sandbox=bool(int(os.getenv(f"{prefix}P24_SANDBOX", "1")) != 0),
-        )
+        names = {
+            "pos_id": "POS_ID",
+            "merchant_id": "MERCHANT_ID",
+            "crc": "CRC",
+            "api_key": "API_KEY",
+            "sandbox": "SANDBOX",
+            "timeout": "TIMEOUT",
+        }
+        values = {
+            field: os.environ[f"{prefix}P24_{suffix}"]
+            for field, suffix in names.items()
+            if f"{prefix}P24_{suffix}" in os.environ
+        }
+        return cls.model_validate(values)

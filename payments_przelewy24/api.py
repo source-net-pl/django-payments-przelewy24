@@ -1,163 +1,145 @@
-import hashlib
-import json
-import logging
-from dataclasses import asdict, dataclass
+from __future__ import annotations
+
+from typing import Any, TypeVar
+from urllib.parse import quote
 
 import requests
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .config import Przelewy24Config
+from .exceptions import Przelewy24Error
+from .schemas import Transaction as Transaction
+from .schemas import TransactionReference
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Transaction:
-    amount: int
-    sessionId: str
-    currency: str
-    description: str
-    email: str
-    country: str
-    language: str
+ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 
 
-@dataclass
-class TransactionDTO:
-    merchantId: int
-    posId: int
-    sessionId: str
-    amount: int
-    currency: str
-    description: str
-    email: str
-    country: str
-    language: str
-    urlReturn: str
-    urlStatus: str
-    sign: str
-    # cart: List[ItemDTO]
-
-    @classmethod
-    def create_from(
-        cls,
-        transaction: Transaction,
-        config: Przelewy24Config,
-        sign: str,
-        success_url: str,
-        status_url: str,
-    ):
-        return cls(
-            merchantId=config.merchant_id,
-            posId=config.merchant_id,
-            sessionId=transaction.sessionId,
-            amount=transaction.amount,
-            currency=transaction.currency,
-            description=transaction.description,
-            email=transaction.email,
-            country=transaction.country,
-            language=transaction.language,
-            urlReturn=success_url,
-            urlStatus=status_url,
-            sign=sign,
-        )
+class _Response(BaseModel):
+    model_config = ConfigDict(strict=True, hide_input_in_errors=True)
 
 
-@dataclass
-class VerifyDTO:
-    merchantId: int
-    posId: int
-    sessionId: str
-    amount: int
-    currency: str
-    orderId: int
-    sign: str
+class _AccessResponse(_Response):
+    data: bool
 
-    @classmethod
-    def create_from(
-        cls,
-        *,
-        orderId: int,
-        transaction: Transaction,
-        config: Przelewy24Config,
-        sign: str,
-    ):
-        return cls(
-            merchantId=config.merchant_id,
-            posId=config.merchant_id,
-            sessionId=transaction.sessionId,
-            amount=transaction.amount,
-            currency=transaction.currency,
-            orderId=orderId,  # TODO
-            sign=sign,
-        )
+
+class _RegistrationData(_Response):
+    token: str = Field(min_length=1)
+
+
+class _RegistrationResponse(_Response):
+    data: _RegistrationData
+
+
+class _VerificationData(_Response):
+    status: str
+
+
+class _VerificationResponse(_Response):
+    data: _VerificationData
 
 
 class Przelewy24API:
-    def __init__(self, config: Przelewy24Config, session=None):
-        self._http = session or requests.session()
+    """Synchronous client. POST/PUT requests are never automatically retried."""
+
+    def __init__(self, config: Przelewy24Config, session: requests.Session | None = None) -> None:
+        self._http = session if session is not None else requests.Session()
+        self._owns_session = session is None
         self._config = config
-        super().__init__()
 
-    def _do(self, method: str, endpoint: str, data=None):
-        response = self._http.request(
-            method=method,
-            url=endpoint,
-            json=data,
-            auth=(str(self._config.pos_id), str(self._config.api_key)),
-        )
-        logger.debug(
-            "%s %s: status_code=%s content=%s",
-            method,
-            endpoint,
-            response.status_code,
-            response.content.decode("utf-8"),
-        )
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"Przelewy24 returns {response.status_code} instead of 200: {response.content}"
+    def close(self) -> None:
+        if self._owns_session:
+            self._http.close()
+
+    def __enter__(self) -> Przelewy24API:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def _do(
+        self, method: str, endpoint: str, data: dict[str, object] | None = None
+    ) -> dict[str, Any]:
+        try:
+            response = self._http.request(
+                method=method,
+                url=endpoint,
+                json=data,
+                auth=(str(self._config.pos_id), self._config.api_key.get_secret_value()),
+                timeout=self._config.timeout,
+                allow_redirects=False,
             )
-        return response.json()
+        except requests.RequestException:
+            raise Przelewy24Error("Przelewy24 request failed") from None
+        if response.status_code != 200:
+            raise Przelewy24Error(
+                f"Przelewy24 returned HTTP {response.status_code}",
+                status_code=response.status_code,
+            )
+        try:
+            payload = response.json()
+        except ValueError:
+            raise Przelewy24Error("Przelewy24 returned invalid JSON") from None
+        if not isinstance(payload, dict):
+            raise Przelewy24Error("Przelewy24 returned a non-object response")
+        return payload
 
-    def _create_sha386_sign(self, **kwargs) -> str:
-        return hashlib.sha384(
-            json.dumps(kwargs).replace(" ", "").encode("utf-8")
-        ).hexdigest()
+    @staticmethod
+    def _parse(model: type[ResponseModel], payload: dict[str, Any]) -> ResponseModel:
+        try:
+            return model.model_validate(payload)
+        except ValidationError:
+            raise Przelewy24Error("Przelewy24 returned an invalid response") from None
+
+    def test_connection(self) -> bool:
+        payload = self._do("GET", self._config.endpoints.testConnection)
+        return self._parse(_AccessResponse, payload).data
 
     def testConnection(self) -> bool:
-        response = self._do("GET", self._config.endpoints.testConnection)
-        return response["data"]
+        """Compatibility alias for the 0.x client."""
+        return self.test_connection()
 
-    def register(
-        self, *, transaction: Transaction, success_url: str, status_url: str
-    ) -> str:
+    def register(self, *, transaction: Transaction, success_url: str, status_url: str) -> str:
         sign = self._config.generate_sign(
             sessionId=transaction.sessionId,
             merchantId=self._config.merchant_id,
             amount=transaction.amount,
             currency=transaction.currency,
         )
-
-        transaction = TransactionDTO.create_from(
-            transaction, self._config, sign, success_url, status_url
-        )
-        payload = asdict(transaction)
+        payload = {
+            **transaction.model_dump(),
+            "merchantId": self._config.merchant_id,
+            "posId": self._config.pos_id,
+            "urlReturn": success_url,
+            "urlStatus": status_url,
+            "sign": sign,
+        }
         response = self._do("POST", self._config.endpoints.transactionRegister, payload)
-        token = response["data"]["token"]
-        return f"{self._config.endpoints.transactionRequest}/{token}"
+        token = self._parse(_RegistrationResponse, response).data.token
+        return f"{self._config.endpoints.transactionRequest}/{quote(token, safe='')}"
 
-    def verify(self, *, transaction: Transaction, orderId: int) -> bool:
-        sign = self._config.generate_sign(
-            sessionId=transaction.sessionId,
-            orderId=orderId,
-            amount=transaction.amount,
-            currency=transaction.currency,
-        )
-        verify = VerifyDTO.create_from(
-            orderId=orderId, transaction=transaction, config=self._config, sign=sign
-        )
-        payload = asdict(verify)
+    def verify(self, *, transaction: TransactionReference, orderId: int) -> bool:
+        if isinstance(orderId, bool) or not isinstance(orderId, int) or orderId <= 0:
+            raise ValueError("orderId must be a positive integer")
+        payload = {
+            "merchantId": self._config.merchant_id,
+            "posId": self._config.pos_id,
+            "sessionId": transaction.sessionId,
+            "amount": transaction.amount,
+            "currency": transaction.currency,
+            "orderId": orderId,
+            "sign": self._config.generate_sign(
+                sessionId=transaction.sessionId,
+                orderId=orderId,
+                amount=transaction.amount,
+                currency=transaction.currency,
+            ),
+        }
         response = self._do("PUT", self._config.endpoints.transactionVerify, payload)
-        return response["data"]["status"] == "success"
+        return self._parse(_VerificationResponse, response).data.status == "success"
 
-    def get_by_session_id(self, *, session_id: str) -> dict:
-        return self._do("GET", self._config.endpoints.transactionGetBySessionId + session_id)
+    def get_by_session_id(self, *, session_id: str) -> dict[str, Any]:
+        if not session_id:
+            raise ValueError("session_id must not be empty")
+        return self._do(
+            "GET", self._config.endpoints.transactionGetBySessionId + quote(session_id, safe="")
+        )

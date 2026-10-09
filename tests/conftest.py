@@ -1,117 +1,114 @@
+import hashlib
 import json
-import logging
 from decimal import Decimal
 
 import pytest
 import responses
+from django.conf import settings
 from payments import get_payment_model
-from payments.models import BasePayment
 
 from payments_przelewy24.api import Przelewy24API, Transaction
-from payments_przelewy24.config import Przelewy24Config
 from payments_przelewy24.provider import Przelewy24Provider
 
-logging.basicConfig(level=logging.DEBUG, format="%(name)s %(levelname)s %(message)s")
-
 
 @pytest.fixture
-def config() -> Przelewy24Config:
-    return Przelewy24Config.from_env()
+def config():
+    return settings.TEST_P24_CONFIG
 
 
-@pytest.fixture
-def response(config: Przelewy24Config):
-    with responses.RequestsMock() as resp:
-        yield {
-            config.endpoints.testConnection: {
-                200: lambda: resp.add(
-                    responses.GET,
-                    config.endpoints.testConnection,
-                    body=json.dumps(dict(data=True, error="")),
-                    status=200,
-                ),
-                400: lambda: resp.add(
-                    responses.GET,
-                    config.endpoints.testConnection,
-                    body=json.dumps(dict(code=400, error="Invalid input data")),
-                    status=400,
-                ),
-            },
-            config.endpoints.transactionRegister: {
-                200: lambda: resp.add(
-                    responses.POST,
-                    config.endpoints.transactionRegister,
-                    body=json.dumps(
-                        dict(data=dict(token="1234-123-12"), responseCode="200")
-                    ),
-                    status=200,
-                ),
-                400: lambda: resp.add(
-                    responses.POST,
-                    config.endpoints.transactionRegister,
-                    body=json.dumps(dict(code=400, error="Invalid input data")),
-                    status=400,
-                ),
-            },
-        }
+@pytest.fixture(autouse=True)
+def http():
+    # No test can accidentally send requests to a real payment gateway.
+    with responses.RequestsMock() as mock:
+        yield mock
 
 
 @pytest.fixture
 def api(config):
-    return Przelewy24API(config)
+    with Przelewy24API(config) as client:
+        yield client
 
 
 @pytest.fixture
-def transaction() -> Transaction:
+def transaction():
     return Transaction(
-        amount=100,
-        sessionId="123",
+        amount=12024,
+        sessionId="session-123",
         currency="PLN",
-        description="Test",
-        email="foo@bar.com",
+        description="Book purchase",
+        email="customer@example.com",
         country="PL",
         language="pl",
     )
 
 
 @pytest.fixture
-def provider(config: Przelewy24Config) -> Przelewy24Provider:
-    return Przelewy24Provider(config=config)
+def provider(config):
+    instance = Przelewy24Provider(config)
+    yield instance
+    instance._api.close()
 
 
 @pytest.fixture
-def payment(db) -> BasePayment:
-    Payment = get_payment_model()
-    return Payment.objects.create(
-        variant="przelewy24",  # this is the variant from PAYMENT_VARIANTS
+def payment(db):
+    return get_payment_model().objects.create(
+        variant="przelewy24",
         description="Book purchase",
-        total=Decimal(120.24),
-        tax=Decimal(20),
+        total=Decimal("120.24"),
+        tax=Decimal("20.00"),
         currency="PLN",
-        delivery=Decimal(10),
-        billing_first_name="Sherlock",
-        billing_last_name="Holmes",
-        billing_address_1="221B Baker Street",
-        billing_address_2="",
-        billing_city="London",
-        billing_postcode="NW1 6XE",
-        billing_country_code="GB",
-        billing_country_area="Greater London",
-        customer_ip_address="127.0.0.1",
+        delivery=Decimal("10.00"),
+        billing_email="customer@example.com",
+        billing_country_code="PL",
     )
 
 
 @pytest.fixture
-def correct_process_data(config: Przelewy24Config, payment: BasePayment):
-    common = {
-        "merchantId": 4748,
-        "posId": 4748,
-        "sessionId": str(payment.pk),
-        "amount": 12024,
-        "originAmount": 12024,
-        "currency": "PLN",
-        "orderId": 306026561,
-        "methodId": 154,
-        "statement": "p24-G02-A65-G61",
-    }
-    return {**common, **{"sign": config.generate_sign(**common)}}
+def sign_notification(config):
+    def sign(data):
+        # Independent implementation of the wire format, not config.generate_sign().
+        fields = (
+            "merchantId",
+            "posId",
+            "sessionId",
+            "amount",
+            "originAmount",
+            "currency",
+            "orderId",
+            "methodId",
+            "statement",
+        )
+        payload = {key: data[key] for key in fields}
+        payload["crc"] = config.crc.get_secret_value()
+        digest = hashlib.sha384(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+        return {**data, "sign": digest}
+
+    return sign
+
+
+@pytest.fixture
+def notification(payment, config, sign_notification):
+    return sign_notification(
+        {
+            "merchantId": config.merchant_id,
+            "posId": config.pos_id,
+            "sessionId": str(payment.pk),
+            "amount": 12024,
+            "originAmount": 12024,
+            "currency": "PLN",
+            "orderId": 306026561,
+            "methodId": 154,
+            "statement": "p24 G02 / Zażółć",
+        }
+    )
+
+
+@pytest.fixture
+def verify_success(http, config):
+    return http.add(
+        responses.PUT,
+        config.endpoints.transactionVerify,
+        json={"data": {"status": "success"}, "responseCode": 0},
+    )

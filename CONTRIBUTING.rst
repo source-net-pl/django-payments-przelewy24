@@ -2,111 +2,67 @@
 Contributing
 ============
 
-Contributions are welcome, and they are greatly appreciated! Every
-little bit helps, and credit will always be given.
+Use an existing checkout and create a branch for your change. From the repository
+root, with Python 3.10+::
 
-You can contribute in many ways:
+    python -m venv .venv
+    . .venv/bin/activate
+    python -m pip install -e '.[dev]'
+    python -m pytest --cov=payments_przelewy24
+    ruff check .
+    ruff format --check .
+    mypy
 
-Types of Contributions
-----------------------
+Run ruff format . to format edits. Tests must not use live merchant credentials
+or contact Przelewy24. HTTP requests are blocked/mocked automatically by the
+shared responses fixture. Add regression tests for changes affecting amounts,
+signatures, responses or payment state.
 
-Report Bugs
-~~~~~~~~~~~
+Compatibility matrix
+--------------------
 
-Report bugs at https://github.com/ar4s/django-payments-przelewy24/issues.
+Install Python 3.10 through 3.14 and put their executables on PATH, then run::
 
-If you are reporting a bug, please include:
+    tox -p 3
 
-* Your operating system name and version.
-* Any details about your local setup that might be helpful in troubleshooting.
-* Detailed steps to reproduce the bug.
+Tox tests Django 5.2 on every supported Python, and Django 6.0/6.1 on Python
+3.12 through 3.14. It also checks Django configuration and migration drift.
+Missing interpreters are errors, not successful skips. Select one environment
+with tox -e py312-django52 or quality checks with tox -e quality.
 
-Fix Bugs
-~~~~~~~~
+Dependency ranges are intentional for a reusable library; CI resolves compatible
+releases on each run to detect upstream regressions. Do not put an application's
+complete lockfile into the library's runtime dependency declarations.
 
-Look through the GitHub issues for bugs. Anything tagged with "bug"
-is open to whoever wants to implement it.
+PostgreSQL
+----------
 
-Implement Features
-~~~~~~~~~~~~~~~~~~
+The full suite, including simultaneous callbacks using separate DB connections,
+runs on PostgreSQL in CI. To reproduce locally, start an isolated test database::
 
-Look through the GitHub issues for features. Anything tagged with "feature"
-is open to whoever wants to implement it.
+    docker run --rm -d --name p24-test-db \
+      -p 127.0.0.1:55432:5432 \
+      -e POSTGRES_DB=p24 -e POSTGRES_PASSWORD=test-only postgres:17
+    python -m pip install 'psycopg[binary]>=3.2,<4'
+    P24_TEST_POSTGRES=1 PGHOST=127.0.0.1 PGPORT=55432 \
+      PGDATABASE=p24 PGUSER=postgres PGPASSWORD=test-only \
+      python -m pytest --cov=payments_przelewy24
+    docker stop p24-test-db
 
-Write Documentation
-~~~~~~~~~~~~~~~~~~~
+These credentials belong only to the disposable local test database. The Django
+test runner creates/drops its test database; its user needs CREATEDB rights.
 
-django-payments-przelewy24 could always use more documentation, whether as part of the
-official django-payments-przelewy24 docs, in docstrings, or even on the web in blog posts,
-articles, and such.
+Packaging
+---------
 
-Submit Feedback
-~~~~~~~~~~~~~~~
+Build and validate both formats::
 
-The best way to send feedback is to file an issue at https://github.com/ar4s/django-payments-przelewy24/issues.
+    python -m build
+    python -m twine check --strict dist/*
 
-If you are proposing a feature:
+CI installs the wheel in a fresh virtual environment outside the source tree and
+checks that the typed package is present. Distribution artifacts are retained by
+GitHub Actions; no package upload or release is triggered.
 
-* Explain in detail how it would work.
-* Keep the scope as narrow as possible, to make it easier to implement.
-* Remember that this is a volunteer-driven project, and that contributions
-  are welcome :)
-
-Get Started!
-------------
-
-Ready to contribute? Here's how to set up `django-payments-przelewy24` for local development.
-
-1. Fork the `django-payments-przelewy24` repo on GitHub.
-2. Clone your fork locally::
-
-    $ git clone git@github.com:your_name_here/django-payments-przelewy24.git
-
-3. Install your local copy into a virtualenv. Assuming you have virtualenvwrapper installed, this is how you set up your fork for local development::
-
-    $ mkvirtualenv django-payments-przelewy24
-    $ cd django-payments-przelewy24/
-    $ python setup.py develop
-
-4. Create a branch for local development::
-
-    $ git checkout -b name-of-your-bugfix-or-feature
-
-   Now you can make your changes locally.
-
-5. When you're done making changes, check that your changes pass flake8 and the
-   tests, including testing other Python versions with tox::
-
-        $ flake8 payments_przelewy24 tests
-        $ python setup.py test
-        $ tox
-
-   To get flake8 and tox, just pip install them into your virtualenv.
-
-6. Commit your changes and push your branch to GitHub::
-
-    $ git add .
-    $ git commit -m "Your detailed description of your changes."
-    $ git push origin name-of-your-bugfix-or-feature
-
-7. Submit a pull request through the GitHub website.
-
-Pull Request Guidelines
------------------------
-
-Before you submit a pull request, check that it meets these guidelines:
-
-1. The pull request should include tests.
-2. If the pull request adds functionality, the docs should be updated. Put
-   your new functionality into a function with a docstring, and add the
-   feature to the list in README.rst.
-3. The pull request should work for Python 2.6, 2.7, and 3.3, and for PyPy. Check
-   https://travis-ci.org/ar4s/django-payments-przelewy24/pull_requests
-   and make sure that the tests pass for all supported Python versions.
-
-Tips
-----
-
-To run a subset of tests::
-
-    $ python -m unittest tests.test_payments_przelewy24
+Before publishing 2.0, complete a sandbox transaction in the consuming staging
+application, review MIGRATING.rst, and review the release version/changelog.

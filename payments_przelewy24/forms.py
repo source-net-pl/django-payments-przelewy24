@@ -1,12 +1,19 @@
+from __future__ import annotations
+
 from decimal import Decimal
+from typing import Any
 
 from django import forms
 from payments.models import BasePayment
+from pydantic import ValidationError
 
 from .config import Przelewy24Config
+from .schemas import Notification
 
 
 class ProcessForm(forms.Form):
+    """Compatibility adapter; validation alone never confirms a payment."""
+
     merchantId = forms.IntegerField()
     posId = forms.IntegerField()
     sessionId = forms.CharField()
@@ -15,45 +22,35 @@ class ProcessForm(forms.Form):
     currency = forms.CharField()
     orderId = forms.IntegerField()
     methodId = forms.IntegerField()
-    statement = forms.CharField()
+    statement = forms.CharField(strip=False)
     sign = forms.CharField()
 
-    def __init__(self, payment: BasePayment, config: Przelewy24Config, **kwargs):
+    def __init__(self, payment: BasePayment, config: Przelewy24Config, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.config = config
         self.payment = payment
 
-    def clean(self):
-        cleaned_data = super().clean()
-        sign = cleaned_data.get("sign", "-1")
-        sessionId = cleaned_data.get("sessionId", "-1")
-        generated_sign = self.config.generate_sign(
-            merchantId=cleaned_data.get("merchantId", 0),
-            posId=cleaned_data.get("posId", 0),
-            sessionId=cleaned_data.get("sessionId", ""),
-            amount=cleaned_data.get("amount", 0),
-            originAmount=cleaned_data.get("originAmount", 0),
-            currency=cleaned_data.get("currency", ""),
-            orderId=cleaned_data.get("orderId", 0),
-            methodId=cleaned_data.get("methodId", 0),
-            statement=cleaned_data.get("statement", ""),
-        )
-
-        if sign != generated_sign:
-            raise forms.ValidationError(
-                f"Incorrect hash: p24_sign={sign} sign={generated_sign}"
+    def clean(self) -> dict[str, Any]:
+        super().clean()
+        try:
+            notification = Notification.model_validate(self.data)
+            notification.validate_payment(
+                config=self.config,
+                session_id=str(self.payment.pk),
+                total=Decimal(self.payment.total),
+                currency=self.payment.currency,
             )
+        except (ValidationError, ValueError):
+            raise forms.ValidationError("Invalid Przelewy24 notification") from None
+        return notification.model_dump()
 
-        if sessionId != str(self.payment.pk):
-            raise forms.ValidationError(
-                f"Incorect payment ID: sessionId: {sessionId}, paymentId: {self.payment.pk}"
-            )
-
-        return cleaned_data
-
-    def save(self, *args, **kwargs):
-        self.payment.transaction_id = self.cleaned_data["statement"]
-        self.payment.captured_amount = (
-            self.payment.captured_amount + Decimal(self.cleaned_data["amount"]) / 100
+    def save(self) -> None:
+        """Persist verified data; call only after the API verification succeeds."""
+        if not self.is_valid():
+            raise ValueError("Cannot save an invalid notification")
+        self.payment.transaction_id = str(self.cleaned_data["orderId"])
+        self.payment.captured_amount = Decimal(self.cleaned_data["amount"]) / 100
+        # django-payments overrides Model.save() without a typed signature.
+        self.payment.save(  # type: ignore[no-untyped-call]
+            update_fields=["transaction_id", "captured_amount"]
         )
-        self.payment.save()

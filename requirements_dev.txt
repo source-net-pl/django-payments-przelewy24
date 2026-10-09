@@ -1,5 +1,3 @@
-invoke
-twine
-wheel
-zest.releaser
+# Compatibility entry point; dependency declarations live in pyproject.toml.
+-e .[dev]
 

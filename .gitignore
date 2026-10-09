@@ -50,3 +50,6 @@ db.sqlite3
 .history
 .pytest_cache
 .mypy_cache
+.ruff_cache
+.venv
+coverage.xml
